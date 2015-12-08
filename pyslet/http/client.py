@@ -799,9 +799,10 @@ class Connection(object):
 
 class SecureConnection(Connection):
 
-    def __init__(self, manager, scheme, hostname, port, ca_certs=None):
+    def __init__(self, manager, scheme, hostname, port, ca_certs=None, context=None):
         super(SecureConnection, self).__init__(manager, scheme, hostname, port)
         self.ca_certs = ca_certs
+        self.context = context
 
     def new_socket(self):
         super(SecureConnection, self).new_socket()
@@ -809,10 +810,14 @@ class SecureConnection(Connection):
             with self.lock:
                 if self.socket is not None:
                     self.socket.setblocking(True)
-                    socket_ssl = ssl.wrap_socket(
-                        self.socket, ca_certs=self.ca_certs,
-                        cert_reqs=ssl.CERT_REQUIRED if
-                        self.ca_certs is not None else ssl.CERT_NONE)
+                    if self.context is not None:
+                        socket_ssl = self.context.wrap_socket(
+                            self.socket)
+                    else:
+                        socket_ssl = ssl.wrap_socket(
+                            self.socket, ca_certs=self.ca_certs,
+                            cert_reqs=ssl.CERT_REQUIRED if
+                            self.ca_certs is not None else ssl.CERT_NONE)
                     self.socketTransport = self.socket
                     self.socket.setblocking(False)
                     self.socket = socket_ssl
@@ -907,7 +912,7 @@ class Client(PEP8Compatibility, object):
     ConnectionClass = Connection
     SecureConnectionClass = SecureConnection
 
-    def __init__(self, max_connections=100, ca_certs=None, timeout=None,
+    def __init__(self, max_connections=100, ca_certs=None, client_cert=None, timeout=None,
                  max_inactive=None):
         PEP8Compatibility.__init__(self)
         self.managerLock = threading.Condition()
@@ -932,6 +937,7 @@ class Client(PEP8Compatibility, object):
         # cached results from socket.getaddrinfo keyed on (hostname,port)
         self.dnsCache = {}
         self.ca_certs = ca_certs
+        self.client_cert = client_cert
         self.credentials = []
         self.cookie_store = None
         self.socketSelect = select.select
@@ -1006,6 +1012,8 @@ class Client(PEP8Compatibility, object):
         context = SSL.Context(method)
         if options is not None:
             context.set_options(options)
+        if self.client_cert is not None:
+            context.load_cert_chain(self.client_cert)
         sock = socket.socket()
         connection = SSL.Connection(context, sock)
         connection.connect(addr)
@@ -1176,8 +1184,13 @@ class Client(PEP8Compatibility, object):
             connection = self.ConnectionClass(self, scheme, host, port,
                                               timeout=self.timeout)
         elif scheme == 'https':
+            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+#            if options is not None:
+#                context.set_options(options)
+            if self.client_cert is not None:
+                context.load_cert_chain(self.client_cert)
             connection = self.SecureConnectionClass(
-                self, scheme, host, port, self.ca_certs)
+                self, scheme, host, port, self.ca_certs, context)
         else:
             raise NotImplementedError(
                 "Unsupported connection scheme: %s" % scheme)
